@@ -16,78 +16,15 @@ RUN date >/build-date.txt && \
 # add our changelog to the containers
 ADD ./assets/CHANGELOG.md /var/www/CHANGELOG.md
 
-
-
-{% block image_variables %}
-## ***********************************************************************
-##  IMAGE VARIABLES
-## ***********************************************************************
-{% block image_variables_main %}
-ENV TZ Europe/Berlin
-ENV PHP_VERSION {{php.default_version}}
-ENV APACHE_DOCROOT {{ apache.docroot }}
-ENV SW_TASKS_ENABLED 0
-ENV COMPOSER_VERSION not-set
-ENV NODE_VERSION {{ node.version }}
-ENV SHOP_DOMAIN localhost
-ENV RECOVERY_MODE 0
-RUN echo "export TZ=${TZ}" >> /etc/profile \
- && echo "export PHP_VERSION=${PHP_VERSION}" >> /etc/profile \
- && echo "export APACHE_DOCROOT=${APACHE_DOCROOT}" >> /etc/profile \
- && echo "export SW_TASKS_ENABLED=${SW_TASKS_ENABLED}" >> /etc/profile \
- && echo "export COMPOSER_VERSION=${COMPOSER_VERSION}" >> /etc/profile \
- && echo "export NODE_VERSION=${NODE_VERSION}" >> /etc/profile \
- && echo "export SHOP_DOMAIN=${SHOP_DOMAIN}" >> /etc/profile \
- && echo "export RECOVERY_MODE=${RECOVERY_MODE}" >> /etc/profile
-
+# Copy configuration files needed for building
 COPY ./config/php/general.ini /tmp/general.ini
 COPY ./config/php/cli.ini /tmp/cli.ini
-{% endblock %}
-
-{% block image_variables_dev %}
-ENV SSH_USER not-set
-ENV SSH_PWD not-set
-ENV XDEBUG_REMOTE_HOST "host.docker.internal"
-ENV XDEBUG_CONFIG "idekey=PHPSTORM"
-ENV PHP_IDE_CONFIG "serverName=localhost"
-ENV XDEBUG_ENABLED 0
-ENV FILEBEAT_ENABLED 0
-ENV TIDEWAYS_KEY not-set
-ENV TIDEWAYS_ENV production
-
 COPY ./config/tideways/tideways.ini /tmp/tideways.ini
 
-
-RUN echo "export SSH_USER=${SSH_USER}" >> /etc/profile \
- && echo "export SSH_PWD=${SSH_PWD}" >> /etc/profile \
- && echo "export XDEBUG_ENABLED=${XDEBUG_ENABLED}" >> /etc/profile \
- && echo "export XDEBUG_REMOTE_HOST=${XDEBUG_REMOTE_HOST}" >> /etc/profile \
- && echo "export XDEBUG_CONFIG=${XDEBUG_CONFIG}" >> /etc/profile \
- && echo "export PHP_IDE_CONFIG=${PHP_IDE_CONFIG}" >> /etc/profile \
- && echo "export FILEBEAT_ENABLED=${FILEBEAT_ENABLED}" >> /etc/profile \
- && echo "export TIDEWAYS_KEY=${TIDEWAYS_KEY}" >> /etc/profile \
- && echo "export TIDEWAYS_ENV=${TIDEWAYS_ENV}" >> /etc/profile
-{% endblock %}
-
-{% block image_variables_mysql %}
-ENV MYSQL_USER not-set
-ENV MYSQL_PWD not-set
-RUN echo "export MYSQL_USER=${MYSQL_USER}" >> /etc/profile \
-    && echo "export MYSQL_PWD=${MYSQL_PWD}" >> /etc/profile
-{% endblock %}
-
-{% block image_variables_sw_currency %}
-ENV SW_CURRENCY 'not-set'
-RUN echo "export SW_CURRENCY=${SW_CURRENCY}" >> /etc/profile
-{% endblock %}
-
-{% block image_variables_sw_api_access_key %}
-ENV SW_API_ACCESS_KEY 'not-set'
-RUN echo "export SW_API_ACCESS_KEY=${SW_API_ACCESS_KEY}" >> /etc/profile
-{% endblock %}
-
-{% endblock %}
-
+# Environment variables needed for building
+ENV TZ Europe/Berlin
+ENV PHP_VERSION {{php.default_version}}
+ENV NODE_VERSION {{ node.version }}
 
 ## ***********************************************************************
 ##  BASE REQUIREMENTS
@@ -265,37 +202,23 @@ RUN apt-get install -y openssl \
 {% block components %}
 
 RUN echo "" \
-
-{% block components_dev_tools %}
     && apt-get install -y rsync \
                             sshpass \
                             jpegoptim \
                             screen \
                             mysql-client \
-{% endblock %}
-
-{% block components_git %}
     && apt-get install -y git
-{% endblock %}
 
-
-
-{% block components_packagers %}
-{% block components_packagers_composer %}
+# Install components needed for building
+RUN cd /var/www \
+# Install Composer
 {% if composer.version == 1 %}
 {% include 'template/components/composer/v1/install.sh.twig' %}
 {% else %}
 {% include 'template/components/composer/v2/install.sh.twig' %}
 {% endif %}
-{% endblock %}
 
-
-
-{% endblock %}
-
-
-{% block components_xdebug %}
-RUN cd /var/www \
+# Install Xdebug for all active PHP versions
 {% for key, value in php.versions %}
 {% if value.active and value.xdebug_version != '' %}
 {% include 'template/components/xdebug/install.sh.twig' with { "php_version" : key,"folder_id" : value.folder_id, "xdebug_tag":value.xdebug_tag} %}
@@ -317,22 +240,14 @@ RUN cd /var/www \
 {% endif %}
 {% endfor %}
  && cd /var/www
-{% endblock %}
 
-
-
-{% block components_mysql %}
+# Install MySQL
 {% include 'template/components/mysql/' ~ mysql.version ~ '/install.sh.twig' with { 'pwd' : db.pwd } %}
 
-{% endblock %}
-
-
-{% block components_adminer %}
+# Install Adminer
 {% include 'template/components/adminer/install.sh.twig' %}
-{% endblock %}
 
-
-{% block components_mailcatcher %}
+# Install Mailcatcher
 {% include 'template/components/mailcatcher/install.sh.twig' %}
 
 RUN {% for key,value in php.versions %}
@@ -341,9 +256,8 @@ echo "sendmail_path = /usr/bin/env $(which catchmail) -f 'local@dockware'" >> /e
 {% endif %}
 {% endfor %}
     echo ""
-{% endblock %}
 
-{% block components_pimpmylog %}
+# Install PimpMyLog
 RUN mkdir -p /var/www/pimpmylog && \
     wget -O - https://github.com/potsky/PimpMyLog/tarball/master | tar xzf - && \
     mv potsky-PimpMyLog-* /var/www/pimpmylog && \
@@ -357,13 +271,11 @@ COPY /config/pimpmylog/config.user.d /var/www/pimpmylog/config.user.d
 COPY /config/pimpmylog/global.inc.php /var/www/pimpmylog/inc/global.inc.php
 
 RUN chown -R www-data:www-data /var/www/pimpmylog/
-{% endblock %}
 
-{% block components_filebeat %}
+# Install Filebeat for build
 RUN apt-get install -y filebeat
-{% endblock %}
 
-{% block components_nvm %}
+# Install NVM and Node.js
 RUN ls -la \
     && mkdir "/var/www/.nvm" \
     && export NVM_DIR="/var/www/.nvm" \
@@ -394,10 +306,8 @@ RUN ls -la \
 
 ENV NODE_PATH $NVM_DIR/v$NODE_VERSION/lib/node_modules
 ENV PATH      $NVM_DIR/v$NODE_VERSION/bin:$PATH
-{% endblock %}
 
 RUN echo "" \
-{% block components_node %}
     # -----------------------------------------------------------
     # we have to reload the correct nvm version otherwise this would destroy it
     && export NVM_DIR="/var/www/.nvm" \
@@ -408,22 +318,14 @@ RUN echo "" \
     && mkdir /var/www/.npm \
     && npm config set cache /var/www/.npm \
     && chown 33:33 /var/www/.npm \
-{% endblock %}
-
-{% block components_grunt %}
     # navigate to another folder outside shopware to avoid this error: npm ERR! Tracker "idealTree" already exists
     && cd /var/www && npm install -g grunt-cli \
     && cd /var/www && npm install grunt --save-dev \
-{% endblock %}
-
-{% block components_packagers_yarn %}
     && npm install -g --no-install-recommends yarn \
     && chown -R www-data:www-data /var/www/.composer \
-{% endblock %}
     && echo ""
 
-
-{% block components_tideways %}
+# Install Tideways
 COPY ./assets/tideways/tideways-daemon /etc/init.d/tideways-daemon
 COPY ./config/tideways/tideways-daemon /etc/default/tideways-daemon
 RUN sudo apt-get -y install tideways-php tideways-daemon  \
@@ -436,7 +338,6 @@ RUN sudo apt-get -y install tideways-php tideways-daemon  \
 {% endif %}
 {% endfor %}
     && rm -rf /tmp/tideways.ini
-{% endblock %}
 {% endblock %}
 
 RUN rm -rf /var/lib/apt/lists/* /var/cache/apt/*
@@ -525,15 +426,23 @@ RUN apt-get install -y gosu \
                         gpg-agent \
                         chromium-browser \
                         xdg-utils \
+{% block components_dev_tools %}
                         rsync \
                         sshpass \
                         jpegoptim \
                         screen \
                         mysql-client \
+{% endblock %}
+{% block components_git %}
                         git \
+{% endblock %}
+{% block components_filebeat %}
                         filebeat \
+{% endblock %}
+{% block components_tideways %}
                         tideways-php \
                         tideways-daemon \
+{% endblock %}
                         openssl \
     && mkdir /var/run/sshd \
     && ln -fs /usr/share/zoneinfo/Europe/Berlin /etc/localtime \
@@ -576,9 +485,8 @@ RUN apt-get install -y php{{ key }}-fpm \
 {% endfor %}
 
 # Set environment variables
-{% block image_variables %}
 ## ***********************************************************************
-##  IMAGE VARIABLES
+##  RUNTIME IMAGE VARIABLES
 ## ***********************************************************************
 {% block image_variables_main %}
 ENV TZ Europe/Berlin
@@ -616,12 +524,38 @@ ENV SW_CURRENCY 'not-set'
 ENV SW_API_ACCESS_KEY 'not-set'
 {% endblock %}
 
-{% endblock %}
-
 # Set Node.js environment
 ENV NODE_PATH /var/www/.nvm/v$NODE_VERSION/lib/node_modules
 ENV PATH      /var/www/.nvm/v$NODE_VERSION/bin:$PATH
 ENV BASH_ENV /var/www/.bashrc
+
+# Node.js runtime setup
+{% block components_node %}
+RUN echo "" \
+    # -----------------------------------------------------------
+    # we have to reload the correct nvm version otherwise this would destroy it
+    && export NVM_DIR="/var/www/.nvm" \
+    && [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" \
+    && [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  \
+    && nvm use {{ node.version }} \
+    # -----------------------------------------------------------
+    && mkdir /var/www/.npm \
+    && npm config set cache /var/www/.npm \
+    && chown 33:33 /var/www/.npm \
+    && echo ""
+{% endblock %}
+
+{% block components_grunt %}
+# Grunt setup would go here in full variant
+{% endblock %}
+
+{% block components_packagers_yarn %}
+# Yarn setup would go here in full variant
+{% endblock %}
+
+{% block components_xdebug %}
+# Xdebug configuration is copied from builder, this block allows variants to override
+{% endblock %}
 
 # Final setup
 RUN sudo update-alternatives --set php /usr/bin/php{{ php.default_version }} > /dev/null 2>&1 && \
