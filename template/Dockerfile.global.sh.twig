@@ -2,10 +2,11 @@
 # Tag: {{ orca.tag }}
 # Copyright 2022 dasistweb GmbH
 #
-FROM {{ base_image }}
-LABEL title="Dockware {{ orca.image }}:{{ orca.tag }}" \
-      version="{{version}}" \
-      maintainer="dasistweb GmbH"
+
+## ***********************************************************************
+##  BUILDER STAGE - Contains build tools and compilation
+## ***********************************************************************
+FROM {{ base_image }} AS builder
 
 # remember build-date
 RUN date >/build-date.txt && \
@@ -439,6 +440,209 @@ RUN sudo apt-get -y install tideways-php tideways-daemon  \
 {% endblock %}
 
 RUN rm -rf /var/lib/apt/lists/* /var/cache/apt/*
+
+## ***********************************************************************
+##  RUNTIME STAGE - Final production image with only runtime dependencies
+## ***********************************************************************
+FROM {{ base_image }}
+
+LABEL title="Dockware {{ orca.image }}:{{ orca.tag }}" \
+      version="{{version}}" \
+      maintainer="dasistweb GmbH"
+
+# Copy build artifacts from builder stage
+COPY --from=builder /build-date.txt /build-date.txt
+COPY --from=builder /var/www/CHANGELOG.md /var/www/CHANGELOG.md
+COPY --from=builder /var/www/.composer /var/www/.composer
+COPY --from=builder /var/www/.nvm /var/www/.nvm
+COPY --from=builder /var/www/.ssh /var/www/.ssh
+COPY --from=builder /var/www/pimpmylog /var/www/pimpmylog
+COPY --from=builder /usr/local/bin/composer /usr/local/bin/composer
+
+# Copy configuration files
+COPY ./config/php/general.ini /tmp/general.ini
+COPY ./config/php/cli.ini /tmp/cli.ini
+COPY ./config/tideways/tideways.ini /tmp/tideways.ini
+
+# Copy all compiled/built components
+{% for key,value in php.versions %}
+{% if value.active == true %}
+COPY --from=builder /etc/php/{{ key }} /etc/php/{{ key }}
+COPY --from=builder /usr/bin/php{{ key }} /usr/bin/php{{ key }}
+COPY --from=builder /usr/bin/php-config{{ key }} /usr/bin/php-config{{ key }}
+COPY --from=builder /usr/sbin/php-fpm{{ key }} /usr/sbin/php-fpm{{ key }}
+COPY --from=builder /usr/lib/php/{{ value.folder_id }} /usr/lib/php/{{ value.folder_id }}
+{% if value.xdebug_version != '' %}
+COPY --from=builder /usr/lib/php/{{ value.folder_id }}/xdebug_{{ key }}.so /usr/lib/php/{{ value.folder_id }}/xdebug_{{ key }}.so
+{% endif %}
+{% endif %}
+{% endfor %}
+
+# Copy other built components
+COPY --from=builder /etc/apache2 /etc/apache2
+COPY --from=builder /etc/init.d/tideways-daemon /etc/init.d/tideways-daemon
+COPY --from=builder /etc/default/tideways-daemon /etc/default/tideways-daemon
+COPY --from=builder /etc/ssh/sshd_config /etc/ssh/sshd_config
+COPY --from=builder /etc/sudoers /etc/sudoers
+COPY --from=builder /etc/profile /etc/profile
+
+# Copy additional config files needed for runtime
+ADD ./config/apache/http2.conf /etc/apache2/conf-available/http2.conf
+ADD ./config/apache/apache2.conf /etc/apache2/apache2.conf
+ADD ./config/apache/ports.conf /etc/apache2/ports.conf
+ADD ./config/apache/sites.conf /etc/apache2/sites-enabled/000-default.conf
+COPY /config/pimpmylog/config.user.d /var/www/pimpmylog/config.user.d
+COPY /config/pimpmylog/global.inc.php /var/www/pimpmylog/inc/global.inc.php
+COPY ./assets/tideways/tideways-daemon /etc/init.d/tideways-daemon
+COPY ./config/tideways/tideways-daemon /etc/default/tideways-daemon
+
+# Set up directories
+RUN mkdir -p /var/www && \
+    mkdir -p /var/www/scripts
+
+# Install only runtime dependencies
+RUN apt-get update \
+    && apt-get install -y wget gnupg2 sudo \
+    && wget -qO - https://artifacts.elastic.co/GPG-KEY-elasticsearch | apt-key add - \
+    && apt-get install -y apt-transport-https \
+    && echo "deb https://artifacts.elastic.co/packages/7.x/apt stable main" | tee -a /etc/apt/sources.list.d/elastic-7.x.list \
+    && sudo echo 'deb https://packages.tideways.com/apt-packages-main any-version main' | sudo tee /etc/apt/sources.list.d/tideways.list \
+    && sudo wget -qO - https://packages.tideways.com/key.gpg | sudo apt-key add \
+    && apt-get update
+
+# Install runtime packages only (no build tools)
+RUN apt-get install -y gosu \
+                        curl \
+                        unzip \
+                        bzip2 \
+                        ssmtp \
+                        lsof \
+                        openssh-server \
+                        cron \
+                        vim \
+                        nano \
+                        jq \
+                        gpg-agent \
+                        chromium-browser \
+                        xdg-utils \
+                        rsync \
+                        sshpass \
+                        jpegoptim \
+                        screen \
+                        mysql-client \
+                        git \
+                        filebeat \
+                        tideways-php \
+                        tideways-daemon \
+                        openssl \
+    && mkdir /var/run/sshd \
+    && ln -fs /usr/share/zoneinfo/Europe/Berlin /etc/localtime \
+    && echo "Europe/Berlin" > /etc/timezone \
+    && a2enmod ssl \
+    && mkdir -p /etc/apache2/ssl \
+    && openssl req -new -x509 -days 365 -sha1 -newkey rsa:2048 -nodes -keyout /etc/apache2/ssl/server.key -out /etc/apache2/ssl/server.crt -subj '/O=Company/OU=Department/CN=localhost' \
+    && chmod 0755 /etc/init.d/tideways-daemon
+
+# Install PHP runtime packages
+{% for key,value in php.versions %}
+{% if value.active == true %}
+RUN apt-get install -y php{{ key }}-fpm \
+                        php{{ key }}-gd \
+                        php{{ key }}-mbstring \
+                        php{{ key }}-iconv \
+                        php{{ key }}-intl \
+                        php{{ key }}-json \
+                        php{{ key }}-xml \
+                        php{{ key }}-pdo \
+                        php{{ key }}-mysql \
+                        php{{ key }}-apcu \
+                        php{{ key }}-apc \
+                        php{{ key }}-curl \
+                        php{{ key }}-cli \
+                        php{{ key }}-ldap \
+                        php{{ key }}-pgsql \
+                        php{{ key }}-gettext \
+                        php{{ key }}-zip \
+                        php{{ key }}-soap \
+                        php{{ key }}-bcmath \
+                        php{{ key }}-redis \
+                        php{{ key }}-imap \
+                        php{{ key }}-ssh2 \
+                        php{{ key }}-pcov \
+                        php{{ key }}-mongo \
+                        php{{ key }}-geoip \
+                        php{{ key }}-amqp
+{% endif %}
+{% endfor %}
+
+# Set environment variables
+{% block image_variables %}
+## ***********************************************************************
+##  IMAGE VARIABLES
+## ***********************************************************************
+{% block image_variables_main %}
+ENV TZ Europe/Berlin
+ENV PHP_VERSION {{php.default_version}}
+ENV APACHE_DOCROOT {{ apache.docroot }}
+ENV SW_TASKS_ENABLED 0
+ENV COMPOSER_VERSION not-set
+ENV NODE_VERSION {{ node.version }}
+ENV SHOP_DOMAIN localhost
+ENV RECOVERY_MODE 0
+{% endblock %}
+
+{% block image_variables_dev %}
+ENV SSH_USER not-set
+ENV SSH_PWD not-set
+ENV XDEBUG_REMOTE_HOST "host.docker.internal"
+ENV XDEBUG_CONFIG "idekey=PHPSTORM"
+ENV PHP_IDE_CONFIG "serverName=localhost"
+ENV XDEBUG_ENABLED 0
+ENV FILEBEAT_ENABLED 0
+ENV TIDEWAYS_KEY not-set
+ENV TIDEWAYS_ENV production
+{% endblock %}
+
+{% block image_variables_mysql %}
+ENV MYSQL_USER not-set
+ENV MYSQL_PWD not-set
+{% endblock %}
+
+{% block image_variables_sw_currency %}
+ENV SW_CURRENCY 'not-set'
+{% endblock %}
+
+{% block image_variables_sw_api_access_key %}
+ENV SW_API_ACCESS_KEY 'not-set'
+{% endblock %}
+
+{% endblock %}
+
+# Set Node.js environment
+ENV NODE_PATH /var/www/.nvm/v$NODE_VERSION/lib/node_modules
+ENV PATH      /var/www/.nvm/v$NODE_VERSION/bin:$PATH
+ENV BASH_ENV /var/www/.bashrc
+
+# Final setup
+RUN sudo update-alternatives --set php /usr/bin/php{{ php.default_version }} > /dev/null 2>&1 && \
+    service php{{ php.default_version }}-fpm stop > /dev/null 2>&1 && \
+    service php{{ php.default_version }}-fpm start && \
+    chown www-data:www-data -R /var/lib/php/sessions && \
+    mkdir -p /var/www/html && \
+    rm -rf /var/www/html/* && \
+    chown -R www-data:www-data /var/www/html && \
+    sudo -u www-data sh -c 'mkdir -p /var/www/html/public' && \
+    chmod -R 0777 /var/www && \
+    chgrp -R www-data /var/log/apache2 && \
+    mkdir -p /var/log/mysql && \
+    chgrp -R www-data /var/log/mysql && \
+    mkdir /var/log/php -p && \
+    touch /var/log/php/cli_errors.log && \
+    touch /var/log/php/fpm_errors.log && \
+    chown -R www-data:www-data /var/log/php && \
+    chmod 0755 /var/log/php && \
+    chown -R www-data:www-data /var/www/pimpmylog/ && \
+    rm -rf /var/lib/apt/lists/* /var/cache/apt/*
 
 {% block assets_install %}
 COPY ./assets/scripts/makefile /var/www/makefile
